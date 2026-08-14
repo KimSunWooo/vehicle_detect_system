@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Runtime input
+input/*
+!input/.gitkeep
+
+# Runtime output
+output/*
+!output/.gitkeep
+
+# Training datasets
+tools/
+
+# Training results
+runs/
+**/runs/
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# Cache
+*.cache
+.translation_cache.json
+
+# Paddle
+.paddleocr/
+.paddlex/
+
+# Logs
+*.log
+logs/
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+credentials.json
+secrets.json
+
+# OS
+.DS_Store
+Thumbs.db

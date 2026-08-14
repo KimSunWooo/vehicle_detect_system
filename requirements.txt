@@ -1,0 +1,9 @@
+ultralytics
+opencv-python
+Pillow
+numpy
+pandas
+requests
+# Install torch/torchvision for your CUDA/CPU environment first if needed.
+torch
+torchvision
