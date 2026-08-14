@@ -30,7 +30,6 @@ runs/
 **/runs/
 
 # Model weights
-*.pt
 *.pth
 *.onnx
 *.engine
