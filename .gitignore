@@ -30,7 +30,6 @@ runs/
 **/runs/
 
 # Model weights
-*.pt
 *.pth
 *.onnx
 *.engine
@@ -42,6 +41,12 @@ runs/
 # Paddle
 .paddleocr/
 .paddlex/
+
+# captureFile
+/captures/
+/captures_augmented/
+/captures_long_distance/
+/captures_short_distance/
 
 # Logs
 *.log

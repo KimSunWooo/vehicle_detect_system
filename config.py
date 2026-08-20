@@ -32,7 +32,7 @@ PLATE_MODEL = MODEL_DIR / "plate_detector.pt"
 
 # COCO vehicle classes
 # car=2, motorcycle=3, bus=5, truck=7
-VEHICLE_CLASSES = [2, 3, 5, 7]
+VEHICLE_CLASSES = [0]
 
 VEHICLE_CONF = 0.25
 PLATE_CONF = 0.25

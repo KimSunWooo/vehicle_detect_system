@@ -25,7 +25,7 @@ class VehicleDetector:
     ) -> None:
         self.model_path = Path(model_path)
         self.conf = conf
-        self.classes = classes or [2, 3, 5, 7]
+        self.classes = [0] if classes is None else classes
 
         # If a local YOLO weight is absent, use its filename so Ultralytics can
         # download an official pretrained model automatically.
@@ -38,6 +38,7 @@ class VehicleDetector:
             conf=self.conf,
             classes=self.classes,
             verbose=False,
+            
         )[0]
 
         detections: list[VehicleDetection] = []
