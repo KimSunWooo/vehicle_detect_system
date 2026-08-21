@@ -8,6 +8,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 
 # --------------------------------------------------
@@ -276,6 +277,124 @@ def enhance_trigger_frame(
 
 
 # --------------------------------------------------
+# Korean Text Rendering
+# --------------------------------------------------
+
+KOREAN_FONT_PATH = (
+    "/usr/share/fonts/truetype/nanum/"
+    "NanumGothic.ttf"
+)
+
+
+def put_korean_text(
+    frame: np.ndarray,
+    text: str,
+    position: tuple[int, int],
+    font_size: int = 24,
+    color: tuple[int, int, int] = (0, 0, 255),
+) -> np.ndarray:
+    """
+    OpenCV BGR 이미지에 한글을 출력한다.
+    color는 OpenCV 기준 BGR.
+    """
+
+    rgb_frame = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2RGB,
+    )
+
+    pil_image = Image.fromarray(
+        rgb_frame
+    )
+
+    draw = ImageDraw.Draw(
+        pil_image
+    )
+
+    font = ImageFont.truetype(
+        KOREAN_FONT_PATH,
+        font_size,
+    )
+
+    rgb_color = (
+        color[2],
+        color[1],
+        color[0],
+    )
+
+    draw.text(
+        position,
+        str(text),
+        font=font,
+        fill=rgb_color,
+    )
+
+    return cv2.cvtColor(
+        np.array(pil_image),
+        cv2.COLOR_RGB2BGR,
+    )
+
+
+def draw_korean_ocr_labels(
+    frame: np.ndarray,
+    result: dict,
+) -> np.ndarray:
+    """
+    process_frame() 결과에서 OCR 문자열을 꺼내
+    번호판 bbox 위에 한글이 포함된 문자열을 표시한다.
+    """
+
+    output = frame.copy()
+
+    for vehicle in result.get(
+        "vehicles",
+        [],
+    ):
+
+        for plate in result.get(
+            "fallback_plates",
+            [],
+        ):
+            bbox = plate.get(
+                "bbox_in_image"
+            )
+
+            if not bbox:
+                continue
+
+            x1, y1, _, _ = bbox
+
+            ocr = plate.get(
+                "ocr",
+                {},
+            )
+
+            text = (
+                ocr.get("text")
+                or ""
+            ).strip()
+
+            if not text:
+                continue
+
+            output = put_korean_text(
+                output,
+                text,
+                (
+                    int(x1),
+                    max(
+                        0,
+                        int(y1) - 30,
+                    ),
+                ),
+                font_size=24,
+                color=(0, 165, 255),
+            )
+
+    return output
+
+
+# --------------------------------------------------
 # Entrance Trigger
 # --------------------------------------------------
 
@@ -369,7 +488,12 @@ def handle_vehicle_trigger(
 
     simple_result = simplify_result(
         result
-    )   
+    )
+
+    annotated = draw_korean_ocr_labels(
+        annotated,
+        result,
+    )
 
     print(
         "[Entrance] Result: "

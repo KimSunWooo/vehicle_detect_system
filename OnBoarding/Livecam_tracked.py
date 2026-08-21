@@ -363,6 +363,117 @@ class LatestFrameCamera:
 # 기존 JPEG encode -> decode 과정은 제거했다.
 # AI에는 최신 OpenCV ndarray frame.copy()를 그대로 전달한다.
 
+def simplify_result(result: dict) -> list[dict]:
+
+    vehicles = result.get(
+        "vehicles",
+        [],
+    )
+
+    fallback_plates = result.get(
+        "fallback_plates",
+        [],
+    )
+
+    # fallback OCR 목록
+    fallback_numbers = []
+
+    for plate in fallback_plates:
+
+        ocr = plate.get(
+            "ocr",
+            {},
+        )
+
+        text = (
+            ocr.get("text")
+            or ""
+        ).strip()
+
+        if text:
+            fallback_numbers.append(text)
+
+    simplified = []
+
+    # 차량별 정보
+    for index, vehicle in enumerate(
+        vehicles,
+        start=1,
+    ):
+
+        # -------------------------
+        # 차량 모델
+        # -------------------------
+
+        classification = vehicle.get(
+            "classification",
+            {},
+        )
+
+        model = classification.get(
+            "model",
+        )
+
+        # -------------------------
+        # OCR
+        # -------------------------
+
+        ocr_data = None
+
+        plates = vehicle.get(
+            "plates",
+            [],
+        )
+
+        if plates:
+
+            # OCR confidence가 가장 높은 번호판 사용
+            best_plate = max(
+                plates,
+                key=lambda p: float(
+                    p.get(
+                        "ocr",
+                        {},
+                    ).get(
+                        "confidence",
+                        0.0,
+                    )
+                ),
+            )
+
+            ocr = best_plate.get(
+                "ocr",
+                {},
+            )
+
+            text = (
+                ocr.get("text")
+                or ""
+            ).strip()
+
+            if text:
+                ocr_data = text
+
+        # -------------------------
+        # Fallback OCR
+        # -------------------------
+
+        fallback_ocr = (
+            []
+        )
+
+        simplified.append(
+            {
+                "index": index,
+                "classification": {
+                    "model": model,
+                },
+                "ocr_data": ocr_data,
+                "fallback_ocr": fallback_ocr,
+            }
+        )
+
+    return simplified
 
 # --------------------------------------------------
 # Vehicle Tracking Helpers
@@ -640,7 +751,7 @@ class AIWorker:
 
         return {
             "vehicles": vehicles,
-            "fallback_plates": fallback_plates or [],
+            "fallback_plates": [],
         }
 
     def _run(self):
@@ -763,15 +874,25 @@ class AIWorker:
                 cycle_ms = (time.perf_counter() - cycle_start) * 1000.0
 
                 with self.lock:
-                    self.result = self._build_result(fallback_plates)
+                    self.result = self._build_result(
+                        fallback_plates
+                    )
+
                     self.pipeline_ms = cycle_ms
 
-                print(
-                    f"[AI] detect={len(detections)} "
-                    f"tracks={len(self.tracks)} "
-                    f"cycle={cycle_ms:.1f}ms "
-                    f"deep={deep_ms_total:.1f}ms"
+                    current_result = self.result
+
+
+                # ------------------------------------------
+                # Terminal Result
+                # ------------------------------------------
+
+                simple_results = simplify_result(
+                    current_result
                 )
+
+                for vehicle in simple_results:
+                    print(vehicle)
 
             except Exception as exc:
                 print(
@@ -790,7 +911,64 @@ class AIWorker:
         self.running = False
         if self.thread.is_alive():
             self.thread.join(timeout=2.0)
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
 
+
+def put_korean_text(
+    frame,
+    text,
+    position,
+    font_path="/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+    font_size=24,
+    color=(0, 0, 255),
+):
+    """
+    OpenCV 이미지에 한글 텍스트를 출력한다.
+
+    color는 OpenCV 기준 BGR.
+    """
+
+    # BGR -> RGB
+    rgb_frame = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2RGB,
+    )
+
+    pil_image = Image.fromarray(
+        rgb_frame
+    )
+
+    draw = ImageDraw.Draw(
+        pil_image
+    )
+
+    font = ImageFont.truetype(
+        font_path,
+        font_size,
+    )
+
+    # BGR -> RGB
+    rgb_color = (
+        color[2],
+        color[1],
+        color[0],
+    )
+
+    draw.text(
+        position,
+        text,
+        font=font,
+        fill=rgb_color,
+    )
+
+    # RGB -> BGR
+    result = cv2.cvtColor(
+        np.array(pil_image),
+        cv2.COLOR_RGB2BGR,
+    )
+
+    return result
 
 # --------------------------------------------------
 # Draw Detection
@@ -858,6 +1036,7 @@ def draw_detection(
             f"{model_conf:.2f}"
         )
 
+        # 차량 모델명은 영문이므로 기존 OpenCV putText 사용
         cv2.putText(
             frame,
             vehicle_label,
@@ -884,11 +1063,14 @@ def draw_detection(
             [],
         ):
 
-            ax1, ay1, ax2, ay2 = (
-                plate[
-                    "bbox_in_image"
-                ]
+            bbox = plate.get(
+                "bbox_in_image"
             )
+
+            if not bbox:
+                continue
+
+            ax1, ay1, ax2, ay2 = bbox
 
             ocr = plate.get(
                 "ocr",
@@ -908,21 +1090,18 @@ def draw_detection(
                 3,
             )
 
-            cv2.putText(
+            frame = put_korean_text(
                 frame,
                 plate_text,
                 (
                     ax1,
                     max(
-                        30,
-                        ay1 - 10,
+                        0,
+                        ay1 - 32,
                     ),
                 ),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 0, 255),
-                2,
-                cv2.LINE_AA,
+                font_size=26,
+                color=(0, 0, 255),
             )
 
     # --------------------------------------------------
@@ -934,11 +1113,14 @@ def draw_detection(
         [],
     ):
 
-        px1, py1, px2, py2 = (
-            plate[
-                "bbox_in_image"
-            ]
+        bbox = plate.get(
+            "bbox_in_image"
         )
+
+        if not bbox:
+            continue
+
+        px1, py1, px2, py2 = bbox
 
         ocr = plate.get(
             "ocr",
@@ -959,21 +1141,18 @@ def draw_detection(
             2,
         )
 
-        cv2.putText(
+        frame = put_korean_text(
             frame,
             plate_text,
             (
                 px1,
                 max(
-                    30,
-                    py1 - 10,
+                    0,
+                    py1 - 30,
                 ),
             ),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 165, 255),
-            2,
-            cv2.LINE_AA,
+            font_size=24,
+            color=(0, 165, 255),
         )
 
     return frame
