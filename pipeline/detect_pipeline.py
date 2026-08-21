@@ -706,6 +706,134 @@ def build_parser() -> argparse.ArgumentParser:
 
     return parser
 
+def _empty_ocr_result() -> dict:
+    return {
+        "text": "",
+        "raw_text": "",
+        "confidence": 0.0,
+        "accepted": False,
+        "valid_format": False,
+        "best_variant": None,
+        "candidates": [],
+    }
+
+
+def detect_vehicles_fast(
+    image,
+    vehicle_detector: VehicleDetector,
+):
+    """Live camera용 lightweight vehicle detection.
+
+    Classification / plate detection / OCR을 수행하지 않고 차량 detector만 실행한다.
+    """
+    return vehicle_detector.detect(image)
+
+
+def analyze_vehicle(
+    vehicle,
+    plate_detector: PlateDetector,
+    vehicle_classifier: YOLO,
+    plate_ocr: PlateOCR,
+    cached_classification: dict | None = None,
+) -> dict:
+    """검출된 차량 1대에 대해 상세 분석을 수행한다.
+
+    cached_classification이 있으면 차종 classifier를 다시 실행하지 않는다.
+    번호판 detection + OCR은 현재 vehicle crop 기준으로 수행한다.
+    """
+    if cached_classification is not None:
+        classification = cached_classification
+    elif vehicle.class_name == "vehicle":
+        classification = classify_vehicle(
+            vehicle.crop,
+            vehicle_classifier,
+        )
+    else:
+        classification = {
+            "model": vehicle.class_name,
+            "raw_model": vehicle.class_name,
+            "confidence": vehicle.confidence,
+            "top3": [],
+        }
+
+    vx1, vy1, vx2, vy2 = vehicle.bbox
+
+    vehicle_record = {
+        "bbox": list(vehicle.bbox),
+        "detection": {
+            "confidence": vehicle.confidence,
+            "class_id": vehicle.class_id,
+            "class_name": vehicle.class_name,
+        },
+        "classification": classification,
+        "plates": [],
+    }
+
+    plates = plate_detector.detect(vehicle.crop)
+
+    for plate_index, plate in enumerate(plates):
+        try:
+            ocr_result = plate_ocr.recognize(plate.crop)
+        except Exception as exc:
+            print(
+                f"OCR FAIL plate={plate_index}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            ocr_result = _empty_ocr_result()
+
+        px1, py1, px2, py2 = plate.bbox
+
+        vehicle_record["plates"].append(
+            {
+                "bbox_in_vehicle": list(plate.bbox),
+                "bbox_in_image": [
+                    vx1 + px1,
+                    vy1 + py1,
+                    vx1 + px2,
+                    vy1 + py2,
+                ],
+                "detection_confidence": plate.confidence,
+                "ocr": ocr_result,
+            }
+        )
+
+    return vehicle_record
+
+
+def detect_fallback_plates(
+    image,
+    plate_detector: PlateDetector,
+    plate_ocr: PlateOCR,
+) -> list[dict]:
+    """차량 detector miss가 의심될 때만 호출하는 full-frame fallback."""
+    fallback_records = []
+
+    plates = plate_detector.detect(image)
+
+    for plate_index, plate in enumerate(plates):
+        try:
+            ocr_result = plate_ocr.recognize(plate.crop)
+        except Exception as exc:
+            print(
+                f"FALLBACK OCR FAIL plate={plate_index}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            ocr_result = _empty_ocr_result()
+
+        px1, py1, px2, py2 = plate.bbox
+
+        fallback_records.append(
+            {
+                "bbox_in_image": [px1, py1, px2, py2],
+                "detection_confidence": plate.confidence,
+                "source": "full_frame_fallback",
+                "ocr": ocr_result,
+            }
+        )
+
+    return fallback_records
+
+
 def process_frame(
     image,
     vehicle_detector: VehicleDetector,
@@ -713,58 +841,31 @@ def process_frame(
     vehicle_classifier: YOLO,
     plate_ocr: PlateOCR,
 ) -> tuple:
+    """기존 snapshot/entrance camera 호환용 전체 파이프라인.
 
+    Live camera에서는 detect_vehicles_fast()와 analyze_vehicle()를 분리 호출하는 것을 권장한다.
+    """
     annotated = image.copy()
-
-    # ------------------------------------------
-    # 1. Vehicle Detection
-    # ------------------------------------------
-
-    vehicles = vehicle_detector.detect(image)
+    vehicles = detect_vehicles_fast(image, vehicle_detector)
 
     print(f"[DEBUG] vehicles detected: {len(vehicles)}")
 
     record = {
         "vehicles": [],
-        # 차량 검출 실패 시 원본 프레임에서 직접 찾은 번호판
         "fallback_plates": [],
     }
 
-    # ==================================================
-    # NORMAL PATH
-    # Vehicle -> Classification -> Plate -> OCR
-    # ==================================================
+    for vehicle in vehicles:
+        vehicle_record = analyze_vehicle(
+            vehicle,
+            plate_detector,
+            vehicle_classifier,
+            plate_ocr,
+        )
+        record["vehicles"].append(vehicle_record)
 
-    for vehicle_index, vehicle in enumerate(vehicles):
-
-        # ------------------------------------------
-        # 2. Vehicle Classification
-        # ------------------------------------------
-
-        if vehicle.class_name == "vehicle":
-
-            classification = classify_vehicle(
-                vehicle.crop,
-                vehicle_classifier,
-            )
-
-        else:
-
-            classification = {
-                "model": vehicle.class_name,
-                "raw_model": vehicle.class_name,
-                "confidence": vehicle.confidence,
-                "top3": [],
-            }
-
-        vehicle_model_name = classification["model"]
-        vehicle_model_conf = classification["confidence"]
-
-        # ------------------------------------------
-        # Vehicle bbox
-        # ------------------------------------------
-
-        vx1, vy1, vx2, vy2 = vehicle.bbox
+        vx1, vy1, vx2, vy2 = vehicle_record["bbox"]
+        classification = vehicle_record["classification"]
 
         cv2.rectangle(
             annotated,
@@ -776,14 +877,8 @@ def process_frame(
 
         cv2.putText(
             annotated,
-            (
-                f"{vehicle_model_name} "
-                f"{vehicle_model_conf:.2f}"
-            ),
-            (
-                vx1,
-                max(20, vy1 - 8),
-            ),
+            f"{classification['model']} {classification['confidence']:.2f}",
+            (vx1, max(20, vy1 - 8)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (255, 0, 0),
@@ -791,70 +886,11 @@ def process_frame(
             cv2.LINE_AA,
         )
 
-        # ------------------------------------------
-        # 3. Plate Detection
-        # 차량이 검출됐으면 기존처럼 vehicle crop 사용
-        # ------------------------------------------
-
-        plates = plate_detector.detect(
-            vehicle.crop
-        )
-
-        vehicle_record = {
-            "bbox": list(vehicle.bbox),
-
-            "detection": {
-                "confidence": vehicle.confidence,
-                "class_id": vehicle.class_id,
-                "class_name": vehicle.class_name,
-            },
-
-            "classification": classification,
-
-            "plates": [],
-        }
-
-        # ------------------------------------------
-        # 4. OCR
-        # ------------------------------------------
-
-        for plate_index, plate in enumerate(plates):
-
-            try:
-
-                ocr_result = plate_ocr.recognize(
-                    plate.crop
-                )
-
-            except Exception as exc:
-
-                print(
-                    f"OCR FAIL "
-                    f"vehicle={vehicle_index} "
-                    f"plate={plate_index}: "
-                    f"{exc}"
-                )
-
-                ocr_result = {
-                    "text": "",
-                    "raw_text": "",
-                    "confidence": 0.0,
-                    "accepted": False,
-                    "valid_format": False,
-                    "best_variant": None,
-                    "candidates": [],
-                }
-
-            # ------------------------------------------
-            # Vehicle crop 좌표 -> 원본 frame 좌표
-            # ------------------------------------------
-
-            px1, py1, px2, py2 = plate.bbox
-
-            ax1 = vx1 + px1
-            ay1 = vy1 + py1
-            ax2 = vx1 + px2
-            ay2 = vy1 + py2
+        for plate in vehicle_record["plates"]:
+            ax1, ay1, ax2, ay2 = plate["bbox_in_image"]
+            ocr_result = plate["ocr"]
+            plate_text = ocr_result.get("text", "")
+            ocr_conf = float(ocr_result.get("confidence", 0.0))
 
             cv2.rectangle(
                 annotated,
@@ -864,27 +900,16 @@ def process_frame(
                 2,
             )
 
-            plate_text = ocr_result["text"]
-            ocr_conf = ocr_result["confidence"]
-
-            if plate_text:
-                plate_label = (
-                    f"{plate_text} "
-                    f"{ocr_conf:.2f}"
-                )
-            else:
-                plate_label = (
-                    f"plate "
-                    f"{plate.confidence:.2f}"
-                )
+            label = (
+                f"{plate_text} {ocr_conf:.2f}"
+                if plate_text
+                else f"plate {plate['detection_confidence']:.2f}"
+            )
 
             cv2.putText(
                 annotated,
-                plate_label,
-                (
-                    ax1,
-                    max(20, ay1 - 8),
-                ),
+                label,
+                (ax1, max(20, ay1 - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
                 (0, 0, 255),
@@ -892,90 +917,24 @@ def process_frame(
                 cv2.LINE_AA,
             )
 
-            vehicle_record["plates"].append(
-                {
-                    "bbox_in_vehicle": list(
-                        plate.bbox
-                    ),
-
-                    "bbox_in_image": [
-                        ax1,
-                        ay1,
-                        ax2,
-                        ay2,
-                    ],
-
-                    "detection_confidence":
-                        plate.confidence,
-
-                    "ocr": ocr_result,
-                }
-            )
-
-        record["vehicles"].append(
-            vehicle_record
-        )
-
-    # ==================================================
-    # FALLBACK PATH
-    #
-    # 차량이 한 대도 검출되지 않았을 경우:
-    #
-    # Original Frame
-    #     -> Plate Detection
-    #     -> OCR
-    #
-    # vehicle crop이 아니므로 plate.bbox 자체가
-    # 원본 이미지 좌표가 된다.
-    # ==================================================
-
+    # Snapshot/entrance 경로는 기존 동작을 보존한다.
     if not vehicles:
-
         print(
             "[FALLBACK] No vehicle detected. "
             "Running plate detection on full frame."
         )
-
-        fallback_plates = plate_detector.detect(
-            image
+        fallback_records = detect_fallback_plates(
+            image,
+            plate_detector,
+            plate_ocr,
         )
+        record["fallback_plates"] = fallback_records
 
-        print(
-            "[FALLBACK] plates detected: "
-            f"{len(fallback_plates)}"
-        )
-
-        for plate_index, plate in enumerate(
-            fallback_plates
-        ):
-
-            try:
-
-                ocr_result = plate_ocr.recognize(
-                    plate.crop
-                )
-
-            except Exception as exc:
-
-                print(
-                    f"FALLBACK OCR FAIL "
-                    f"plate={plate_index}: "
-                    f"{exc}"
-                )
-
-                ocr_result = {
-                    "text": "",
-                    "raw_text": "",
-                    "confidence": 0.0,
-                    "accepted": False,
-                    "valid_format": False,
-                    "best_variant": None,
-                    "candidates": [],
-                }
-
-            # full frame에 직접 plate detector를 실행했으므로
-            # plate.bbox가 그대로 원본 frame 좌표
-            px1, py1, px2, py2 = plate.bbox
+        for plate in fallback_records:
+            px1, py1, px2, py2 = plate["bbox_in_image"]
+            ocr_result = plate["ocr"]
+            plate_text = ocr_result.get("text", "")
+            ocr_conf = float(ocr_result.get("confidence", 0.0))
 
             cv2.rectangle(
                 annotated,
@@ -985,54 +944,21 @@ def process_frame(
                 2,
             )
 
-            plate_text = ocr_result["text"]
-            ocr_conf = ocr_result["confidence"]
-
-            if plate_text:
-
-                plate_label = (
-                    f"FALLBACK {plate_text} "
-                    f"{ocr_conf:.2f}"
-                )
-
-            else:
-
-                plate_label = (
-                    f"FALLBACK PLATE "
-                    f"{plate.confidence:.2f}"
-                )
+            label = (
+                f"FALLBACK {plate_text} {ocr_conf:.2f}"
+                if plate_text
+                else f"FALLBACK PLATE {plate['detection_confidence']:.2f}"
+            )
 
             cv2.putText(
                 annotated,
-                plate_label,
-                (
-                    px1,
-                    max(20, py1 - 8),
-                ),
+                label,
+                (px1, max(20, py1 - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
                 (0, 165, 255),
                 2,
                 cv2.LINE_AA,
-            )
-
-            record["fallback_plates"].append(
-                {
-                    "bbox_in_image": [
-                        px1,
-                        py1,
-                        px2,
-                        py2,
-                    ],
-
-                    "detection_confidence":
-                        plate.confidence,
-
-                    "source":
-                        "full_frame_fallback",
-
-                    "ocr": ocr_result,
-                }
             )
 
     return annotated, record

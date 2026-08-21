@@ -21,7 +21,7 @@ ANNOTATED_DIR = OUTPUT_DIR / "annotated"
 
 MODEL_DIR = PROJECT_DIR / "models" / "runtime"
 
-VEHICLE_MODEL = MODEL_DIR / "vehicle_detector.pt"
+VEHICLE_MODEL = MODEL_DIR / "vehicle_detector_add_enterance.pt"
 VEHICLE_CLASSIFIER_MODEL = MODEL_DIR / "vehicle_classifier.pt"
 PLATE_MODEL = MODEL_DIR / "plate_detector.pt"
 
